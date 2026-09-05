@@ -1,0 +1,3 @@
+# Lockfiles that are test data, not dependencies this project installs.
+# One glob per line; `#` starts a comment.
+tests/fixtures/**

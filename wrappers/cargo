@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Supply-chain protection wrapper for `cargo` (WSL / Linux).
+#
+# cargo has no built-in release-age gate: `-Z min-publish-age` exists only on
+# nightly. This wrapper adds one after the fact - it lets cargo resolve, then
+# audits what cargo wrote into Cargo.lock and rolls the file back when a crate
+# version is younger than the minimum age.
+#
+# Install: this file lives at ~/bin/cargo, and ~/bin comes before
+# ~/.cargo/bin on PATH.
+#
+# Emergency bypass:
+#   ALLOW_YOUNG_DEPS=1 cargo add <crate>
+
+set -uo pipefail
+
+REAL_CARGO="${DEP_AGE_GATE_REAL_CARGO:-$HOME/.cargo/bin/cargo}"
+MIN_AGE="${DEP_AGE_GATE_MIN_AGE:-72h}"
+
+if [[ ! -x "$REAL_CARGO" ]]; then
+    echo "cargo wrapper: real cargo not found at $REAL_CARGO" >&2
+    exit 127
+fi
+
+# Not inside a cargo project (`cargo --version`, `cargo new`, ...): nothing to guard.
+MANIFEST="$("$REAL_CARGO" locate-project --workspace --message-format plain 2>/dev/null || true)"
+if [[ -z "$MANIFEST" ]]; then
+    exec "$REAL_CARGO" "$@"
+fi
+
+LOCKFILE="$(dirname "$MANIFEST")/Cargo.lock"
+SNAPSHOT=""
+if [[ -f "$LOCKFILE" ]]; then
+    SNAPSHOT="$(mktemp -t Cargo.lock.before.XXXXXX)"
+    cp "$LOCKFILE" "$SNAPSHOT"
+fi
+
+# `cargo add` / `remove` / `upgrade` edit Cargo.toml as well as Cargo.lock.
+# Snapshot the manifest for exactly those commands, so a refusal leaves no
+# half-applied dependency behind. Other commands never touch Cargo.toml, and
+# restoring it there could clobber an edit made in another window.
+MANIFEST_SNAPSHOT=""
+for arg in "$@"; do
+    [[ "$arg" == -* ]] && continue
+    if [[ "$arg" == "add" || "$arg" == "remove" || "$arg" == "rm" || "$arg" == "upgrade" ]]; then
+        MANIFEST_SNAPSHOT="$(mktemp -t Cargo.toml.before.XXXXXX)"
+        cp "$MANIFEST" "$MANIFEST_SNAPSHOT"
+    fi
+    break
+done
+
+cleanup() {
+    [[ -n "$SNAPSHOT" && -f "$SNAPSHOT" ]] && rm -f "$SNAPSHOT"
+    [[ -n "$MANIFEST_SNAPSHOT" && -f "$MANIFEST_SNAPSHOT" ]] && rm -f "$MANIFEST_SNAPSHOT"
+    return 0
+}
+trap cleanup EXIT
+
+"$REAL_CARGO" "$@"
+CARGO_RC=$?
+
+# Nothing resolved, or the lock is byte-identical: pass cargo's result through.
+if [[ ! -f "$LOCKFILE" ]]; then
+    exit $CARGO_RC
+fi
+if [[ -n "$SNAPSHOT" ]] && cmp -s "$SNAPSHOT" "$LOCKFILE"; then
+    exit $CARGO_RC
+fi
+
+if [[ "${ALLOW_YOUNG_DEPS:-}" == "1" ]]; then
+    echo "" >&2
+    echo "WARNING: ALLOW_YOUNG_DEPS=1 - Cargo.lock changed and was NOT age-checked." >&2
+    echo "         Audit before you commit: dep-age-gate audit --lock '$LOCKFILE' --all" >&2
+    exit $CARGO_RC
+fi
+
+if ! command -v dep-age-gate >/dev/null 2>&1; then
+    echo "" >&2
+    echo "cargo wrapper: Cargo.lock changed but dep-age-gate is not on PATH." >&2
+    echo "               Failing closed and restoring the previous lockfile." >&2
+    if [[ -n "$SNAPSHOT" ]]; then cp "$SNAPSHOT" "$LOCKFILE"; else rm -f "$LOCKFILE"; fi
+    [[ -n "$MANIFEST_SNAPSHOT" ]] && cp "$MANIFEST_SNAPSHOT" "$MANIFEST"
+    exit 1
+fi
+
+AUDIT_ARGS=(audit --lock "$LOCKFILE" --min-age "$MIN_AGE")
+[[ -n "$SNAPSHOT" ]] && AUDIT_ARGS+=(--before "$SNAPSHOT")
+[[ -z "$SNAPSHOT" ]] && AUDIT_ARGS+=(--all)
+
+if dep-age-gate "${AUDIT_ARGS[@]}"; then
+    exit $CARGO_RC
+fi
+
+echo "" >&2
+echo "cargo wrapper: refused - Cargo.lock added crate versions younger than $MIN_AGE." >&2
+if [[ -n "$SNAPSHOT" ]]; then
+    cp "$SNAPSHOT" "$LOCKFILE"
+    echo "               Cargo.lock restored to its previous contents." >&2
+else
+    rm -f "$LOCKFILE"
+    echo "               Cargo.lock removed (it did not exist before this command)." >&2
+fi
+if [[ -n "$MANIFEST_SNAPSHOT" ]]; then
+    cp "$MANIFEST_SNAPSHOT" "$MANIFEST"
+    echo "               Cargo.toml restored (the dependency was not added)." >&2
+fi
+echo "" >&2
+echo "  Pin an older version:   cargo add <crate>@<older-version>" >&2
+echo "  Check one version:      dep-age-gate check crates:<crate>@<version>" >&2
+echo "  Bypass after auditing:  ALLOW_YOUNG_DEPS=1 cargo $*" >&2
+exit 1

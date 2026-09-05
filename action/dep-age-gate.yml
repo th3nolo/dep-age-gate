@@ -1,0 +1,43 @@
+# Refuse changes that add a dependency version younger than 72 hours.
+#
+# Written by dep-age-gate's scripts/install-workflow.sh; edit it there.
+#
+# dep-age-gate is a private repository, so a private action is only usable by
+# repositories in the same org: this file references its own org's copy.
+#
+# Every action is pinned by commit SHA, not by tag: a tag can be moved to
+# point at different code after you review it.
+name: dep-age-gate
+
+on:
+  pull_request:
+  push:
+    branches: [__PUSH_BRANCHES__]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dep-age-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-age:
+    name: dependency age (72h)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # actions/checkout v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      # actions/setup-python v5.3.0
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
+        with:
+          python-version: "3.12"
+
+      - uses: __ORG__/dep-age-gate/action@__SHA__
+        with:
+          min-age: "72h"
+          base: ${{ github.event.pull_request.base.sha }}

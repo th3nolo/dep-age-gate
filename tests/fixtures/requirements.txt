@@ -1,0 +1,16 @@
+# Compiled by: uv pip compile pyproject.toml -o requirements.txt
+-r base.txt
+--index-url https://pypi.org/simple
+
+certifi==2024.8.30 \
+    --hash=sha256:922820b53db7a7257ffbda3f597266d435245903d80737e34f8a45ff3e3230d8 \
+    --hash=sha256:bec941d2aa8195e248a60b31ff9f0558284cf01a52591ceda73ea9afffd69fd9
+requests==2.32.3
+urllib3==2.2.3 ; python_version >= "3.10"
+Flask[async]==3.0.3
+
+# not pinned: no single version to date
+httpx>=0.27.0
+
+# direct URL: no registry publish date
+internal-helpers @ https://github.com/example/internal-helpers/archive/9f8e7d6.tar.gz

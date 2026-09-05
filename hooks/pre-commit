@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# dep-age-gate pre-commit hook.
+#
+# Audits every staged lockfile and refuses the commit when it introduces a
+# dependency version younger than the minimum age (default 72h).
+#
+# Runs unchanged on WSL/Linux and on Windows: Git for Windows executes hooks
+# with its bundled bash.
+#
+# Bypass (records nothing - prefer `dep-age-gate audit --allow ... --reason ...`):
+#   ALLOW_YOUNG_DEPS=1 git commit ...
+#   git commit --no-verify
+
+set -uo pipefail
+
+MIN_AGE="${DEP_AGE_GATE_MIN_AGE:-72h}"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+run_gate() {
+    if command -v dep-age-gate >/dev/null 2>&1; then
+        dep-age-gate "$@"
+        return $?
+    fi
+    for candidate in "$HOME/dep-age-gate" "$(dirname "$0")/.."; do
+        if [ -f "$candidate/dep_age_gate/cli.py" ]; then
+            PYTHONPATH="$candidate${PYTHONPATH:+:$PYTHONPATH}" \
+                "$(command -v python3 || command -v python)" -m dep_age_gate "$@"
+            return $?
+        fi
+    done
+    return 127
+}
+
+# Nothing staged that we know how to read -> nothing to do.
+STAGED="$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)"
+if [ -z "$STAGED" ]; then
+    exit 0
+fi
+if ! printf '%s\n' "$STAGED" | grep -qE '(^|/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.ya?ml|bun\.lockb?|yarn\.lock|uv\.lock|poetry\.lock|Cargo\.lock|gradle\.lockfile|pom\.xml|requirements[^/]*\.(txt|in))$'; then
+    exit 0
+fi
+
+cd "$REPO_ROOT" || exit 1
+run_gate audit --min-age "$MIN_AGE"
+STATUS=$?
+
+if [ $STATUS -eq 127 ]; then
+    echo "" >&2
+    echo "pre-commit: dep-age-gate is not installed; cannot check staged lockfiles." >&2
+    echo "            Install it, or commit with --no-verify if you accept the risk." >&2
+    exit 1
+fi
+
+if [ $STATUS -ne 0 ]; then
+    cat >&2 <<'MSG'
+
+pre-commit: refused - this commit adds dependency versions that are too young.
+
+  Inspect one version:   dep-age-gate check npm:<pkg>@<version>
+  Re-run the audit:      dep-age-gate audit -v
+  Accept one version:    dep-age-gate audit --allow <pkg>@<ver> --reason "<why>"
+
+Before you bypass, do the 4-step audit:
+  1. Does the package run install scripts (preinstall/install/postinstall)?
+  2. Diff the tarball against the previous version - anything unexpected?
+  3. Was it published with trusted publishing / npm provenance?
+  4. Does the provenance repo match the package's real source repo?
+
+MSG
+    exit 1
+fi
+
+# Chain a pre-existing hook, if the installer moved one aside.
+NEXT="$(dirname "$0")/pre-commit.local"
+if [ -x "$NEXT" ]; then
+    "$NEXT" "$@"
+    exit $?
+fi
+exit 0

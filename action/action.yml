@@ -1,0 +1,64 @@
+name: "dep-age-gate"
+description: "Fail a pull request that adds a dependency version younger than a minimum age."
+author: "th3nolo"
+
+inputs:
+  min-age:
+    description: "Minimum age, e.g. 72h, 3d, PT72H."
+    required: false
+    default: "72h"
+  base:
+    description: "Git ref to diff against. Defaults to the pull request base sha."
+    required: false
+    default: ""
+  paths:
+    description: "Optional explicit lockfile paths, space separated."
+    required: false
+    default: ""
+  allow-binary-lock:
+    description: "Skip bun.lockb instead of failing. Default false: fail closed."
+    required: false
+    default: "false"
+  args:
+    description: "Extra arguments passed through to `dep-age-gate audit`."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve base ref
+      id: base
+      shell: bash
+      run: |
+        BASE="${{ inputs.base }}"
+        if [ -z "$BASE" ]; then
+          BASE="${{ github.event.pull_request.base.sha }}"
+        fi
+        if [ -z "$BASE" ]; then
+          BASE="$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)"
+        fi
+        echo "ref=$BASE" >> "$GITHUB_OUTPUT"
+
+    - name: Run dep-age-gate
+      shell: bash
+      env:
+        DEP_AGE_GATE_CACHE: ${{ runner.temp }}/dep-age-gate-cache
+      run: |
+        set -euo pipefail
+        # One array, appended to. "${EMPTY[@]:-}" would expand to a single
+        # empty string, and audit reads that as a lockfile path it cannot
+        # parse; an unquoted expansion of an empty input adds nothing.
+        CMD=(python3 -m dep_age_gate audit)
+        CMD+=(--base "${{ steps.base.outputs.ref }}")
+        CMD+=(--min-age "${{ inputs.min-age }}")
+        if [ "${{ inputs.allow-binary-lock }}" = "true" ]; then CMD+=(--allow-binary-lock); fi
+        # shellcheck disable=SC2206
+        CMD+=(${{ inputs.args }})
+        # shellcheck disable=SC2206
+        CMD+=(${{ inputs.paths }})
+        PYTHONPATH="${{ github.action_path }}/.." "${CMD[@]}"
+
+branding:
+  icon: "clock"
+  color: "orange"

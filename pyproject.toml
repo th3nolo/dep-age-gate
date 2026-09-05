@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dep-age-gate"
+version = "1.1.0"
+description = "Refuse dependency versions younger than a minimum age, across npm/pnpm/bun/yarn, pip/uv/poetry, cargo and Maven/Gradle."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "th3nolo" }]
+dependencies = []
+
+[project.scripts]
+dep-age-gate = "dep_age_gate.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["dep_age_gate*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The globally installed hydra pytest plugin fails to import against the
+# antlr4 runtime present on some machines and aborts collection before any
+# test runs. This package has no hydra dependency, so switch it off.
+addopts = "-p no:hydra_pytest"
