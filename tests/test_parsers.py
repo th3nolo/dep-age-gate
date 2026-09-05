@@ -365,3 +365,38 @@ def test_bun_lockb_is_a_skip_with_allow_binary_lock():
     assert len(outcome.skips) == 1
     assert outcome.skips[0].what == "bun.lockb"
     assert "--allow-binary-lock" in outcome.skips[0].reason
+
+
+def test_npm_lock_nested_node_modules_uses_innermost_name():
+    import json
+
+    from dep_age_gate.parsers import npm_lock
+
+    lock = json.dumps(
+        {
+            "name": "app",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "app", "version": "1.0.0"},
+                "node_modules/@tailwindcss/oxide-wasm32-wasi": {
+                    "version": "4.1.0",
+                    "resolved": "https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/oxide-wasm32-wasi-4.1.0.tgz",
+                },
+                "node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/tslib": {
+                    "version": "2.8.1",
+                    "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+                },
+                "node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/@emnapi/core": {
+                    "version": "1.7.1",
+                    "resolved": "https://registry.npmjs.org/@emnapi/core/-/core-1.7.1.tgz",
+                },
+            },
+        }
+    )
+    outcome = npm_lock.parse(lock, "package-lock.json")
+    names = sorted((d.name, d.version) for d in outcome.deps)
+    assert names == [
+        ("@emnapi/core", "1.7.1"),
+        ("@tailwindcss/oxide-wasm32-wasi", "4.1.0"),
+        ("tslib", "2.8.1"),
+    ]

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dep-age-gate"
-version = "1.1.0"
+version = "1.1.1"
 description = "Refuse dependency versions younger than a minimum age, across npm/pnpm/bun/yarn, pip/uv/poetry, cargo and Maven/Gradle."
 readme = "README.md"
 requires-python = ">=3.10"

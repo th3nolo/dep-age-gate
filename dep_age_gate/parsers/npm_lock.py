@@ -6,7 +6,10 @@ import re
 from dep_age_gate.model import NPM, Dep, ParseOutcome, Skip
 from dep_age_gate.parsers._common import looks_like_registry_version
 
-_NAME_FROM_PATH = re.compile(r"(?:^|/)node_modules/(.+)$")
+# The package name is what follows the LAST node_modules/ segment. A nested
+# install such as node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/tslib
+# is tslib, not "@tailwindcss/oxide-wasm32-wasi/node_modules/tslib".
+_NAME_FROM_PATH = re.compile(r"(?:^|/)node_modules/((?:(?!node_modules/).)+)$")
 
 
 def _name_from_path(path: str):
