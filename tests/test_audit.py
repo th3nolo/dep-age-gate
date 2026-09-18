@@ -55,7 +55,7 @@ def keys(deps):
 
 
 @pytest.mark.parametrize("layout", ["nested", "cycle", "missing", "relative", "url"])
-def test_requirements_includes_are_rejected_without_reading_them(tmp_path, monkeypatch, layout):
+def test_requirements_includes_capture_local_graph_and_reject_unsafe_graphs(tmp_path, monkeypatch, layout):
     import builtins
     import urllib.request
 
@@ -74,15 +74,21 @@ def test_requirements_includes_are_rejected_without_reading_them(tmp_path, monke
     assert errors == []
 
     def unexpected_read(*args, **kwargs):
-        pytest.fail("requirements parsing must not open includes or fetch URLs")
+        pytest.fail("collect must use the captured graph without reads or URL fetches")
 
     monkeypatch.setattr(builtins, "open", unexpected_read)
     monkeypatch.setattr(urllib.request, "urlopen", unexpected_read)
     deps, skips, errors = audit.collect(targets)
-    assert deps == []
     assert skips == []
-    assert len(errors) == 1
-    assert "unsupported requirements include" in errors[0]
+    if layout in ("nested", "relative"):
+        assert keys(deps) == {("pypi", "requests", "2.32.3")}
+        assert errors == []
+    else:
+        assert deps == []
+        assert len(errors) == 1
+        reason = {"cycle": "cycle", "missing": "cannot read", "url": "local relative"}[layout]
+        assert reason in errors[0]
+        assert "incomplete dependency coverage" in errors[0]
 
 
 @needs_git

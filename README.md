@@ -232,21 +232,46 @@ git commit --no-verify                                                     # las
   `bun install --save-text-lockfile`.
 * **`requirements.txt` ranges cannot be checked.** Only `name==version` pins
   name one version. Compile them (`uv pip compile`, `pip-compile`).
-* **Requirements option lines fail the audit with incomplete coverage.**
-  Includes (`-r` / `--requirement`, `-c` / `--constraint`), editable installs
-  (`-e` / `--editable`), index/resolver options and unknown options are
-  unsupported. They appear in console errors and JSON `errors`, and cause
-  exit status 1 even when there are no new pins. No included path or URL is
-  opened. Recursive includes would require matching snapshots for the working
-  tree, staging area and base revision; reading today's files for a historical
-  snapshot would produce an incorrect comparison. Audit a self-contained file
-  of exact pins without option lines, or a supported lockfile. Hash options
-  attached to a pin, including backslash continuations, remain supported.
-  Existing explicit bypass `ALLOW_YOUNG_DEPS=1` also bypasses these errors;
-  `--allow` for an individual package does not. Discovery still selects
-  supported filenames, not arbitrary included files: for include-based
-  projects, audit the root requirements file explicitly on every change until
-  migrating to a supported self-contained input.
+* **Local requirements includes are followed within a bounded snapshot.**
+  `-r` / `--requirement` and `-c` / `--constraint` accept separated arguments,
+  attached short arguments and long `--option=value` forms. Includes can have
+  any filename; paths are relative to the containing file, including quoted
+  paths with spaces and Windows backslash separators. Absolute/drive/UNC paths,
+  remote or `file:` URLs, environment expansion, root escapes, symlinks and
+  reparse points fail. The boundary is the repository root, or the root input's
+  containing directory outside a repository. Each graph is limited to 32 include
+  levels, 128 files, 1 MiB per file and 8 MiB total; cycles, missing files and
+  unsupported encodings fail with incomplete coverage. UTF-8 is supported.
+  `--base` reads historical includes from that Git revision; default staged
+  audits read the index, never unstaged include contents. Graphs are captured
+  when targets are built. Included-only modifications and deletions select the
+  owning tracked requirements root even if the include's filename is not a
+  discovery pattern. Exclusions select roots; they do not hide their includes.
+  `--before` contains only one file, so historical includes are not read from
+  today's filesystem: current included pins are conservatively audited again.
+* **Constraints do not request installation.** Only unconditional `name==version`
+  constraints without extras are supported. They supply a version for a bare
+  named requirement or agree with an existing exact pin; incompatible pins,
+  conflicting active constraints and combinations requiring range resolution
+  fail. Unrelated constraint entries are not queried as installed dependencies.
+  Each nested directive sets its own role (`-r` requirements, `-c` constraints),
+  following pip. Root files explicitly selected by the user are requirements;
+  automatic discovery avoids treating a reached constraint file as another root.
+  This does not resolve transitive dependencies or evaluate environment markers;
+  requirement pins are conservatively audited across markers. Compile a complete
+  lockfile to cover the resolved transitive installation set.
+* **Other requirements directives fail the audit.** Editable installs,
+  index/resolver options and unknown options produce console errors and JSON
+  `errors`, with exit status 1 even if no new pins exist. Hash options attached
+  to pins and their continuations remain supported. Text-only parser calls
+  without a snapshot reader still reject includes. `ALLOW_YOUNG_DEPS=1` retains
+  its explicit bypass; a package-specific `--allow` does not bypass parse errors.
+  The behavior is based on pip's [requirements format](https://pip.pypa.io/en/stable/reference/requirements-file-format/),
+  [constraint semantics](https://pip.pypa.io/en/stable/user_guide/#constraints-files)
+  and [include traversal](https://github.com/pypa/pip/blob/main/src/pip/_internal/req/req_file.py).
+  Renovate's [pip requirements manager](https://docs.renovatebot.com/modules/manager/pip_requirements/)
+  documents filename matching separately; those patterns are not evidence that
+  this audit resolves an installation graph or follows Renovate's extraction rules.
 * **`pom.xml` covers direct dependencies with an explicit version.** Transitive
   dependencies and versions inherited from a parent POM or a BOM have no version
   in the file to check. Gradle projects need dependency locking turned on
