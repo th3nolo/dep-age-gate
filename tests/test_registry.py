@@ -281,10 +281,12 @@ def test_a_disabled_cache_writes_nothing(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_an_expired_cache_entry_is_refetched(tmp_path):
+def test_an_expired_cache_entry_is_refetched(tmp_path, monkeypatch):
+    monkeypatch.setattr("dep_age_gate.cache.time.time", lambda: 1000.0)
     transport = age_transport()
     registry = client(transport, cache=Cache(directory=tmp_path, ttl=0))
     registry.published_at(Dep(NPM, "lodash", "4.17.21"))
+    monkeypatch.setattr("dep_age_gate.cache.time.time", lambda: 1001.0)
     registry.published_at(Dep(NPM, "lodash", "4.17.21"))
     assert len(transport.calls) == 2
 

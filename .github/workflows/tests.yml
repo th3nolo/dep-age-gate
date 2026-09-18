@@ -1,0 +1,58 @@
+name: Tests and packaging
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+        python: ['3.10.20', '3.11.15', '3.12.13', '3.13.13', '3.14.5']
+        include:
+          - os: ubuntu-24.04
+            uv-checksum: 7035608168e106375b36d0c818d537a889c51a8625fe7f8f7cad5e62b947c368
+          - os: windows-2022
+            uv-checksum: 1665fc8e37b5d70a134820d6d7891747471a2ac8bc940ee7af0b69fd03b28d61
+    defaults:
+      run:
+        shell: bash
+    env:
+      UV_NO_CONFIG: '1'
+      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.ci-python
+      UV_CACHE_DIR: ${{ github.workspace }}/.ci-uv-cache
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c # v7.0.0
+        with:
+          version: '0.11.19'
+          checksum: ${{ matrix.uv-checksum }}
+          enable-cache: false
+      - name: Install the pinned runtime and frozen test/build dependencies
+        run: |
+          uv python install '${{ matrix.python }}'
+          uv venv --python '${{ matrix.python }}' --no-python-downloads .venv
+          uv pip sync --python .venv --require-hashes --only-binary :all: --index-url https://pypi.org/simple .github/requirements-ci.txt
+          uv pip check --python .venv
+      - name: Run the complete suite with external-network guards
+        run: |
+          uv run --no-project --python .venv --no-python-downloads --offline python .github/scripts/test_ci_guards.py
+          uv run --no-project --python .venv --no-python-downloads --offline python .github/scripts/run_tests.py
+      - name: Build sdist and wheel and smoke-test the installed CLI offline
+        run: uv run --no-project --python .venv --no-python-downloads --offline python .github/scripts/package_smoke.py
