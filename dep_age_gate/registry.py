@@ -22,6 +22,7 @@ from email.utils import parsedate_to_datetime
 from dep_age_gate import __version__
 from dep_age_gate.cache import Cache
 from dep_age_gate.model import CRATES, MAVEN, NPM, PYPI, Dep, Result
+from dep_age_gate.python_index import PythonIndexError, SimpleIndexTransport, simple_published_at
 
 USER_AGENT = f"dep-age-gate/{__version__} (+https://github.com/th3nolo/dep-age-gate)"
 TIMEOUT = 20
@@ -115,10 +116,11 @@ def normalize_pypi(name: str) -> str:
 
 
 class RegistryClient:
-    def __init__(self, cache: Cache = None, transport=None, workers: int = 12):
+    def __init__(self, cache: Cache = None, transport=None, workers: int = 12, index_transport=None):
         self.cache = cache if cache is not None else Cache()
         self.transport = transport or HttpTransport()
         self.workers = max(1, workers)
+        self.index_transport = index_transport or SimpleIndexTransport()
 
     # -- per-ecosystem lookups -------------------------------------------
 
@@ -234,6 +236,11 @@ class RegistryClient:
             if raw is None:
                 raise NotFound(f"npm:{dep.name}@{dep.version}: version not in registry")
         elif dep.ecosystem == PYPI:
+            if dep.registry:
+                try:
+                    return simple_published_at(dep.registry, dep.name, dep.version, self.index_transport)
+                except PythonIndexError as exc:
+                    raise TransportError(str(exc)) from None
             raw = self._pypi_time(dep.name, dep.version)
         elif dep.ecosystem == CRATES:
             times = self._crates_times(dep.name)
@@ -261,7 +268,8 @@ class RegistryClient:
             unique.setdefault(dep.key, dep)
 
         def work(dep: Dep) -> Result:
-            if dep.key in allow or (dep.ecosystem, dep.name, "*") in allow:
+            # Existing public-registry exceptions must not authorize a different source.
+            if dep.key in allow or (not dep.registry and (dep.ecosystem, dep.name, "*") in allow):
                 reason = allow.get(dep.key) or allow.get((dep.ecosystem, dep.name, "*"))
                 return Result(dep=dep, status="ALLOWED", allow_reason=reason)
             try:

@@ -29,10 +29,12 @@ class Dep:
     version: str
     source: str = ""      # file it came from
     detail: str = ""      # extra context (configuration name, lock section)
+    registry: str = ""    # canonical custom Python index; empty = ecosystem default
 
     @property
     def key(self) -> tuple:
-        return (self.ecosystem, self.name, self.version)
+        identity = (self.ecosystem, self.name, self.version)
+        return identity + (self.registry,) if self.registry else identity
 
     def label(self) -> str:
         return f"{self.ecosystem}:{self.name}@{self.version}"

@@ -1,13 +1,14 @@
 """uv.lock — TOML with one `[[package]]` block per resolved distribution.
 
-Only public PyPI registry packages are checked. Other registries fail closed;
-editable, virtual, directory and git sources have no PyPI upload time.
+Registry identity is retained; custom indexes require trusted runner config.
+Editable, virtual, directory and git sources have no registry upload time.
 """
 
 import re
 
 from dep_age_gate.model import PYPI, Dep, ParseOutcome, Skip
-from dep_age_gate.parsers._common import PYPI_INDEXES, iter_toml_package_blocks, toml_string
+from dep_age_gate.parsers._common import iter_toml_package_blocks, toml_string
+from dep_age_gate.python_index import configured_python_index
 
 _SOURCE = re.compile(r"^\s*source\s*=\s*\{\s*([a-z-]+)\s*=", re.MULTILINE)
 _REGISTRY = re.compile(
@@ -37,14 +38,12 @@ def parse(text, source, **_):
             )
             continue
         registry = _REGISTRY.match(block, match.start())
-        if registry is None or registry.group(2) not in PYPI_INDEXES:
-            # Do not include URLs here: private indexes may embed credentials.
-            # Excluding these deps also keeps unsupported baseline entries from
-            # hiding a later same-version switch back to public PyPI.
+        try:
+            identity = configured_python_index(registry.group(2) if registry else "")
+        except ValueError as exc:
             outcome.errors.append(
-                f"{source}: {name}=={version}: unsupported registry; "
-                "only https://pypi.org/simple is supported"
+                f"{source}: {name}=={version}: {exc}"
             )
             continue
-        outcome.deps.append(Dep(PYPI, name, version, source))
+        outcome.deps.append(Dep(PYPI, name, version, source, registry=identity))
     return outcome

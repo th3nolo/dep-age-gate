@@ -282,13 +282,25 @@ def test_a_disabled_cache_writes_nothing(tmp_path):
 
 
 def test_an_expired_cache_entry_is_refetched(tmp_path, monkeypatch):
+    # Windows clocks can return the same tick on both calls. A zero TTL still
+    # expires immediately; don't rely on the wall clock advancing in this test.
     monkeypatch.setattr("dep_age_gate.cache.time.time", lambda: 1000.0)
     transport = age_transport()
     registry = client(transport, cache=Cache(directory=tmp_path, ttl=0))
     registry.published_at(Dep(NPM, "lodash", "4.17.21"))
-    monkeypatch.setattr("dep_age_gate.cache.time.time", lambda: 1001.0)
     registry.published_at(Dep(NPM, "lodash", "4.17.21"))
     assert len(transport.calls) == 2
+
+
+def test_cache_expires_at_the_exact_positive_ttl_boundary(tmp_path, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("dep_age_gate.cache.time.time", lambda: now[0])
+    cache = Cache(directory=tmp_path, ttl=60)
+    cache.put(NPM, "fixture", {"1.0.0": "2020-01-01T00:00:00Z"})
+    now[0] = 1059.0
+    assert cache.get(NPM, "fixture") == {"1.0.0": "2020-01-01T00:00:00Z"}
+    now[0] = 1060.0
+    assert cache.get(NPM, "fixture") is None
 
 
 def test_pypi_cache_key_is_the_normalised_name(tmp_path):

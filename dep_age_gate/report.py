@@ -1,5 +1,6 @@
 """Console table and JSON output."""
 
+import hashlib
 import json
 import os
 import sys
@@ -7,6 +8,10 @@ import sys
 from dep_age_gate.duration import humanize
 
 _ORDER = {"FAIL": 0, "UNKNOWN": 1, "ALLOWED": 2, "PASS": 3}
+
+
+def _registry_id(dep):
+    return hashlib.sha256(dep.registry.encode()).hexdigest()[:16] if dep.registry else None
 
 
 def _iso(value):
@@ -32,11 +37,11 @@ def _rows(results):
         rows.append(
             [
                 result.status,
-                result.dep.label(),
+                result.dep.label() + (f" [index:{_registry_id(result.dep)}]" if result.dep.registry else ""),
                 _iso(result.published),
                 humanize(result.age_seconds) if result.age_seconds is not None else "-",
                 _short_source(result.dep.source),
-                result.allow_reason or result.message or "",
+                result.allow_reason or result.message or ("configured Python index" if result.dep.registry else ""),
             ]
         )
     return rows
@@ -82,6 +87,7 @@ def render_json(results, min_age_seconds, skips, errors, stream=None):
                 "age_seconds": int(r.age_seconds) if r.age_seconds is not None else None,
                 "source": r.dep.source,
                 "detail": r.dep.detail,
+                "registry_id": _registry_id(r.dep),
                 "allow_reason": r.allow_reason or None,
                 "message": r.message or None,
             }
