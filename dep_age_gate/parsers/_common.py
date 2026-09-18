@@ -2,6 +2,10 @@
 
 import re
 
+# Only these indexes identify distributions whose dates our PyPI client can
+# establish. Do not infer trust from a hostname substring or follow an index URL.
+PYPI_INDEXES = ("https://pypi.org/simple", "https://pypi.org/simple/")
+
 # Version strings that are not a registry release.
 _NON_REGISTRY_PREFIXES = (
     "file:", "link:", "portal:", "workspace:", "patch:", "git:", "git+",
