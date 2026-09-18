@@ -104,6 +104,14 @@ def _show(root, ref, relative, binary=False):
     return gitutil.show(root, ref, relative, binary=binary)
 
 
+def _relative_inside(path: str, root: str) -> str | None:
+    try:
+        relative = os.path.relpath(os.path.abspath(path), root).replace(os.sep, "/")
+    except ValueError:
+        return None  # Windows paths on different drives cannot be made relative.
+    return None if relative == ".." or relative.startswith("../") else relative
+
+
 def discover(paths, root=None):
     """Expand the given paths into supported lockfiles."""
     found = []
@@ -162,9 +170,9 @@ def _build_targets(paths=None, base=None, lock=None, before=None, scan_all=False
                 continue
             base_text = None
             if root and not scan_all:
-                relative = os.path.relpath(os.path.abspath(candidate), root)
+                relative = _relative_inside(candidate, root)
                 ref = base if base else ("HEAD" if gitutil.has_head(root) else None)
-                if ref:
+                if ref and relative is not None:
                     base_text = _show(
                         root, ref, relative,
                         binary=os.path.basename(candidate) in BINARY_NAMES,
@@ -246,10 +254,8 @@ def build_targets(paths=None, base=None, lock=None, before=None, scan_all=False,
                 prepared.append(target)
                 continue
             full = os.path.abspath(os.path.join(root, target.label) if implicit else target.label)
-            source_root = root or os.path.dirname(full)
+            source_root = root if implicit else (gitutil.repo_root(full) or os.path.dirname(full))
             relative = os.path.relpath(full, source_root).replace(os.sep, "/")
-            if relative == ".." or relative.startswith("../"):
-                source_root, relative = os.path.dirname(full), os.path.basename(full)
             current_source = RequirementsSource(source_root, "" if staged else None,
                                                 entries=index_entries)
             visited: set[str] = set()
@@ -275,6 +281,10 @@ def build_targets(paths=None, base=None, lock=None, before=None, scan_all=False,
                 # A single --before file cannot prove the historical include graph.
                 # Fail-closed text parsing keeps all current pins in coverage.
                 target.base_outcome = requirements.parse(target.base, target.label)
+            if target.base_outcome is not None and target.base_outcome.errors:
+                # A missing/unsupported include may change global source options.
+                # Partial history cannot prove any current pin was already audited.
+                target.base_outcome = ParseOutcome()
             if implicit:
                 graphs[target.label] = visited
             if not implicit or (visited | previous_visited) & changed:
@@ -315,6 +325,7 @@ def collect(targets, allow_binary_lock=False):
                 target.label, target.base, target.label,
                 allow_binary_lock=True,  # the base is history; never fail on it
             )
-            baseline = {dep.key for dep in previous.deps}
+            if module is not requirements or not previous.errors:
+                baseline = {dep.key for dep in previous.deps}
         deps.extend(dep for dep in current.deps if dep.key not in baseline)
     return deps, skips, errors
