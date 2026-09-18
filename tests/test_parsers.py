@@ -247,6 +247,44 @@ def test_requirements_txt():
     url_skip = [w for w in reasons if w.startswith("internal-helpers @ https://")]
     assert len(url_skip) == 1
     assert reasons[url_skip[0]] == "direct URL requirement"
+    assert len(outcome.errors) == 2
+    assert "unsupported requirements include" in outcome.errors[0]
+    assert "unsupported requirements option" in outcome.errors[1]
+
+
+@pytest.mark.parametrize("directive,kind", [
+    ("-r deps.txt", "requirements include"),
+    ("-rdeps.txt", "requirements include"),
+    ("--requirement deps.txt", "requirements include"),
+    ("--requirement=deps.txt", "requirements include"),
+    ("-c constraints.txt", "constraints include"),
+    ("-cconstraints.txt", "constraints include"),
+    ("--constraint=constraints.txt", "constraints include"),
+    ("-e .", "editable requirement"),
+    ("-e../local", "editable requirement"),
+    ("--editable=git+https://example.org/repo", "editable requirement"),
+    ("--index-url https://user:secret@example.org/simple", "requirements option"),
+    ("--extra-index-url=https://example.org/simple", "requirements option"),
+    ("--find-links ./wheels", "requirements option"),
+    ("--no-index", "requirements option"),
+    ("--hash=sha256:abc", "requirements option"),
+    ("--require-hashes", "requirements option"),
+    ("--unknown-option", "requirements option"),
+    ("-r", "requirements include"),
+])
+def test_requirements_directives_fail_closed(directive, kind):
+    outcome = parse("requirements.txt", "  " + directive + " # comment\n")
+    assert outcome.deps == []
+    assert outcome.skips == []
+    assert len(outcome.errors) == 1
+    assert f"requirements.txt: unsupported {kind}" in outcome.errors[0]
+    assert "incomplete dependency coverage" in outcome.errors[0]
+    assert "secret" not in outcome.errors[0]
+
+
+def test_requirements_pin_hash_continuations_are_still_supported():
+    outcome = parse("requirements.txt", b"# comment\nrequests==2.32.3 \\\n    --hash=sha256:abc\n")
+    assert keys(outcome) == {("pypi", "requests", "2.32.3")}
     assert outcome.errors == []
 
 

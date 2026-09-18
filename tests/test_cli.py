@@ -15,6 +15,52 @@ from dep_age_gate.model import Result
 NOW = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
 
 
+@pytest.mark.parametrize("contents", [
+    "-r deps.txt\n", "-c constraints.txt\n", "-e .\n",
+    "--requirement=https://example.invalid/private.txt\n",
+])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_audit_directive_only_file_fails_with_visible_error(
+    tmp_path, monkeypatch, capsys, contents, json_output,
+):
+    monkeypatch.delenv("ALLOW_YOUNG_DEPS", raising=False)
+    calls = install_fake_registry(monkeypatch, {})
+    path = tmp_path / "requirements.txt"
+    path.write_text(contents, encoding="utf-8")
+    args = ["audit", str(path), "--all"] + (["--json"] if json_output else [])
+    assert cli.main(args) == 1
+    captured = capsys.readouterr()
+    if json_output:
+        payload = json.loads(captured.out)
+        assert payload["results"] == []
+        assert len(payload["errors"]) == 1
+        assert "incomplete dependency coverage" in payload["errors"][0]
+    else:
+        assert "incomplete dependency coverage" in captured.err
+        assert "no new dependency versions" not in captured.out
+    assert calls == []
+
+
+def test_audit_unchanged_directive_fails_even_with_allowed_pin(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("ALLOW_YOUNG_DEPS", raising=False)
+    install_fake_registry(monkeypatch, {})
+    before = tmp_path / "before.txt"
+    before.write_text("-r deps.txt\n", encoding="utf-8")
+    current = tmp_path / "requirements.txt"
+    current.write_text("-r deps.txt\nrequests==2.32.3\n", encoding="utf-8")
+    args = ["audit", "--lock", str(current), "--before", str(before),
+            "--allow", "pypi:requests@2.32.3", "--reason", "test", "--json"]
+    assert cli.main(args) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["results"][0]["status"] == "ALLOWED"
+    assert len(payload["errors"]) == 1
+    monkeypatch.setenv("ALLOW_YOUNG_DEPS", "1")
+    assert cli.main(args) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["errors"] == payload["errors"]
+    assert "ALLOW_YOUNG_DEPS=1" in captured.err
+
+
 def install_fake_registry(monkeypatch, ages):
     """Replace cli.RegistryClient with one that grades from a canned age table.
 
