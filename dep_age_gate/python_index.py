@@ -61,7 +61,7 @@ def canonical_python_index(url: str) -> str:
         if (parts.scheme != "https" or not parts.hostname or parts.username is not None
                 or parts.password is not None or parts.query or parts.fragment
                 or not re.fullmatch(r"[A-Za-z0-9.-]+", parts.hostname)
-                or not re.fullmatch(r"/[A-Za-z0-9/_.~-]*", parts.path)
+                or not re.fullmatch(r"/[A-Za-z0-9/_.~+-]*", parts.path)
                 or any(p in (".", "..") for p in parts.path.split("/"))
                 or "//" in parts.path or port == 0):
             raise ValueError

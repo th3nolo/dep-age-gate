@@ -191,6 +191,11 @@ can be referenced as above; Poetry's `POETRY_HTTP_BASIC_<NAME>_USERNAME` and
 [Renovate hostRules](https://docs.renovatebot.com/getting-started/private-packages/)
 configure Renovate's own requests; this tool does not read Renovate config,
 `.netrc`, keyrings, or package-manager config automatically.
+[Renovate's PyPI datasource](https://docs.renovatebot.com/modules/datasource/pypi/)
+can discover versions through HTML as well as JSON. An age check additionally
+needs publication timestamps: this adapter accepts only timestamp-bearing Simple
+JSON, including configured `/+simple` paths. Artifactory operators must enable
+`upload-time` metadata generation on the server.
 
 The adapter in `dep_age_gate/python_index.py` requires standard wheel or sdist
 filenames matching the exact package/version and valid UTC upload times for
