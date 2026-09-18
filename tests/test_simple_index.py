@@ -145,6 +145,11 @@ def test_index_authorization_is_exact_not_a_host_prefix(monkeypatch):
             configured_python_index(different)
 
 
+def test_devpi_style_simple_path_retains_its_identity():
+    url = "https://packages.example.com/user/index/+simple"
+    assert canonical_python_index(url + "/") == url
+
+
 def test_environment_credentials_are_bound_to_one_exact_index(monkeypatch):
     monkeypatch.setenv(CONFIG_ENV, json.dumps([
         {"url": INDEX, "username_env": "UV_INDEX_INTERNAL_USERNAME", "password_env": "UV_INDEX_INTERNAL_PASSWORD"},
