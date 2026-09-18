@@ -166,6 +166,13 @@ Publish dates come from `registry.npmjs.org` (`time[version]`),
 `Last-Modified` of the `.pom` on repo1.maven.org. Answers are cached for 24 h in
 `~/.cache/dep-age-gate` (`%LOCALAPPDATA%\dep-age-gate\cache` on Windows).
 
+For `uv.lock` and Poetry `legacy` indexes, only `https://pypi.org/simple`
+(with an optional trailing slash) is supported. Other indexes are errors,
+even for unchanged versions: public PyPI dates cannot establish the age of a
+custom distribution. Custom index URLs are never contacted or printed. Switching
+the same version from an unsupported index to public PyPI triggers a check;
+unsupported historical entries do not count as checked baseline versions.
+
 Entries with no registry publish date are reported as skips, never as passes:
 workspace links, `git+`, `file:`, `link:`, `portal:`, `workspace:`, `patch:`
 protocols, Cargo path members, poetry git sources, `pom.xml` versions inherited
