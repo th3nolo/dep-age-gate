@@ -166,12 +166,61 @@ Publish dates come from `registry.npmjs.org` (`time[version]`),
 `Last-Modified` of the `.pom` on repo1.maven.org. Answers are cached for 24 h in
 `~/.cache/dep-age-gate` (`%LOCALAPPDATA%\dep-age-gate\cache` on Windows).
 
-For `uv.lock` and Poetry `legacy` indexes, only `https://pypi.org/simple`
-(with an optional trailing slash) is supported. Other indexes are errors,
-even for unchanged versions: public PyPI dates cannot establish the age of a
-custom distribution. Custom index URLs are never contacted or printed. Switching
-the same version from an unsupported index to public PyPI triggers a check;
-unsupported historical entries do not count as checked baseline versions.
+For `uv.lock` and Poetry `legacy` indexes, the selected index is part of the
+dependency identity. Switching registries at the same version triggers a new
+check. Public PyPI continues to use its release JSON endpoint. A custom index
+uses its own [Simple JSON API](https://packaging.python.org/en/latest/specifications/simple-repository-api/)
+project endpoint and must provide API 1.1+ `files[].upload-time` timestamps
+(PEP 700). Public PyPI timestamps never substitute for a custom index's dates.
+
+Authorize each custom index in the **trusted runner environment**, separately
+from the lockfile. `DEP_AGE_GATE_PYTHON_INDEXES` is a JSON array:
+
+```sh
+export DEP_AGE_GATE_PYTHON_INDEXES='[{"url":"https://packages.example.com/simple","username_env":"UV_INDEX_INTERNAL_USERNAME","password_env":"UV_INDEX_INTERNAL_PASSWORD"}]'
+```
+
+Supply the referenced username/password through your CI secret store or shell
+environment; omit both references for an anonymous index. The URL match is exact
+after hostname/default-port/trailing-slash normalization. Credentials embedded in
+URLs, query strings, fragments, and path traversal are rejected. Do not derive
+this configuration or credential variable names from an untrusted pull request.
+[uv's named-index environment variables](https://docs.astral.sh/uv/concepts/indexes/#authentication)
+can be referenced as above; Poetry's `POETRY_HTTP_BASIC_<NAME>_USERNAME` and
+`..._PASSWORD` variables can be referenced the same way.
+[Renovate hostRules](https://docs.renovatebot.com/getting-started/private-packages/)
+configure Renovate's own requests; this tool does not read Renovate config,
+`.netrc`, keyrings, or package-manager config automatically.
+[Renovate's PyPI datasource](https://docs.renovatebot.com/modules/datasource/pypi/)
+can discover versions through HTML as well as JSON. An age check additionally
+needs publication timestamps: this adapter accepts only timestamp-bearing Simple
+JSON, including configured `/+simple` paths. Artifactory operators must enable
+`upload-time` metadata generation on the server.
+
+The adapter in `dep_age_gate/python_index.py` requires standard wheel or sdist
+filenames matching the exact package/version and valid UTC upload times for
+every matching file. It uses the **newest matching file upload**, so adding a new
+wheel to an old version cannot borrow the old source archive's age. Version
+spellings requiring equivalence rules, unusual distribution formats, HTML-only
+indexes, and indexes without timestamps remain `UNKNOWN` and fail the check.
+There is no `Last-Modified` fallback. Unconfigured indexes remain parse errors,
+including unchanged entries; unsupported historical entries cannot hide a
+later switch to a supported source. An unchanged configured source/version is
+outside a diff audit; use `audit --all` to recheck its current metadata.
+
+Custom-index requests use HTTPS with certificate/hostname verification, pinned
+public DNS addresses, no redirects/retries/proxies, a 20-second connection/read
+budget, and an 8 MiB response limit. DNS resolution uses the operating system's
+resolver timeout. Private/loopback/link-local network addresses are unsupported,
+even when the index URL is configured. This is support for private **packages on
+publicly routable indexes**, not universal registry or intranet support. Artifact
+URLs are never fetched. Custom metadata and credentials are not cached to disk;
+public-registry allowlist entries do not authorize custom-index packages.
+Diagnostics omit registry URLs, credential values, and server response bodies;
+reports identify custom sources with a stable SHA-256 prefix (`registry_id`).
+`tests/test_simple_index.py` covers source changes, metadata failures, auth scope,
+local HTTP responses, redirect rejection, and address restrictions; the local
+HTTP fixtures fake TLS and are not evidence of live TLS acceptance.
 
 Entries with no registry publish date are reported as skips, never as passes:
 workspace links, `git+`, `file:`, `link:`, `portal:`, `workspace:`, `patch:`

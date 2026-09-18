@@ -55,7 +55,7 @@ class Cache:
             return None
         if not isinstance(blob, dict) or blob.get("key") != key:
             return None
-        if time.time() - blob.get("fetched_at", 0) > self.ttl:
+        if self.ttl <= 0 or time.time() - blob.get("fetched_at", 0) >= self.ttl:
             return None
         self.hits += 1
         return blob.get("data")
