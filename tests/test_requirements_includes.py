@@ -1,6 +1,7 @@
 """Real local files and Git snapshots; registry resolution is not performed."""
 
 import os
+import ntpath
 import stat
 import subprocess
 from types import SimpleNamespace
@@ -235,3 +236,46 @@ def test_bad_git_base_fails_instead_of_falling_back_to_filesystem(repo):
                                          base="missing-ref", cwd=str(repo))
     assert targets == []
     assert "Git source snapshot" in str(errors)
+
+
+@pytest.mark.parametrize("historical_include", ["-r missing", "--index-url https://example.invalid/simple"])
+def test_incomplete_history_cannot_suppress_current_pin_age_check(repo, historical_include):
+    path = repo / "requirements.txt"
+    path.write_text(historical_include + "\nrequests==2\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "untrusted historical source")
+    path.write_text("requests==2\n", encoding="utf-8")
+    targets, errors = audit.build_targets(cwd=str(repo), base="HEAD")
+    assert errors == []
+    deps, skips, errors = audit.collect(targets)
+    assert keys(deps) == {("pypi", "requests", "2")}
+    assert skips == errors == []
+
+
+def test_cross_drive_paths_are_not_compared_to_unrelated_repository(monkeypatch):
+    monkeypatch.setattr(audit.os.path, "abspath", ntpath.abspath)
+    monkeypatch.setattr(audit.os.path, "relpath", ntpath.relpath)
+    assert audit._relative_inside(r"C:\project\requirements.txt", r"D:\repository") is None
+
+
+@pytest.mark.parametrize("mode", ["lock", "explicit"])
+def test_outside_repository_input_uses_its_own_containing_root(repo, tmp_path, mode):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    path = outside / "requirements.txt"
+    path.write_text("-r leaf", encoding="utf-8")
+    (outside / "leaf").write_text("requests==2", encoding="utf-8")
+    options = {"lock": str(path)} if mode == "lock" else {"paths": [str(path)]}
+    targets, errors = audit.build_targets(cwd=str(repo), **options)
+    assert errors == []
+    deps, skips, errors = audit.collect(targets)
+    assert keys(deps) == {("pypi", "requests", "2")}
+    assert deps[0].source == "leaf"
+    assert skips == errors == []
+
+
+def test_text_only_partial_history_cannot_suppress_current_pin():
+    target = audit.Target("requirements.txt", "requests==2", "-r missing\nrequests==2")
+    deps, skips, errors = audit.collect([target])
+    assert keys(deps) == {("pypi", "requests", "2")}
+    assert skips == errors == []

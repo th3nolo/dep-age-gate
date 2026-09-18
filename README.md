@@ -248,7 +248,8 @@ git commit --no-verify                                                     # las
   owning tracked requirements root even if the include's filename is not a
   discovery pattern. Exclusions select roots; they do not hide their includes.
   `--before` contains only one file, so historical includes are not read from
-  today's filesystem: current included pins are conservatively audited again.
+  today's filesystem. An incomplete historical graph cannot prove the source
+  of its pins, so all current pins are conservatively audited again.
 * **Constraints do not request installation.** Only unconditional `name==version`
   constraints without extras are supported. They supply a version for a bare
   named requirement or agree with an existing exact pin; incompatible pins,

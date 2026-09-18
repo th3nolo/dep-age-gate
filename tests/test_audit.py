@@ -93,7 +93,7 @@ def test_requirements_includes_capture_local_graph_and_reject_unsafe_graphs(tmp_
 
 @needs_git
 @pytest.mark.parametrize("mode", ["staged", "base", "paths"])
-def test_requirements_diff_reports_unchanged_include_and_only_new_pins(repo, mode):
+def test_requirements_diff_reaudits_all_pins_when_history_is_incomplete(repo, mode):
     path = repo / "requirements.txt"
     path.write_text("-r deps.txt\nrequests==2.32.3\n", encoding="utf-8")
     git(repo, "add", "requirements.txt")
@@ -111,7 +111,7 @@ def test_requirements_diff_reports_unchanged_include_and_only_new_pins(repo, mod
     targets, errors = audit.build_targets(**options)
     assert errors == []
     deps, _, errors = audit.collect(targets)
-    assert keys(deps) == {("pypi", "certifi", "2024.8.30")}
+    assert keys(deps) == {("pypi", "certifi", "2024.8.30"), ("pypi", "requests", "2.32.3")}
     assert len(errors) == 1
     assert "incomplete dependency coverage" in errors[0]
 
