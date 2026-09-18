@@ -225,6 +225,21 @@ git commit --no-verify                                                     # las
   `bun install --save-text-lockfile`.
 * **`requirements.txt` ranges cannot be checked.** Only `name==version` pins
   name one version. Compile them (`uv pip compile`, `pip-compile`).
+* **Requirements option lines fail the audit with incomplete coverage.**
+  Includes (`-r` / `--requirement`, `-c` / `--constraint`), editable installs
+  (`-e` / `--editable`), index/resolver options and unknown options are
+  unsupported. They appear in console errors and JSON `errors`, and cause
+  exit status 1 even when there are no new pins. No included path or URL is
+  opened. Recursive includes would require matching snapshots for the working
+  tree, staging area and base revision; reading today's files for a historical
+  snapshot would produce an incorrect comparison. Audit a self-contained file
+  of exact pins without option lines, or a supported lockfile. Hash options
+  attached to a pin, including backslash continuations, remain supported.
+  Existing explicit bypass `ALLOW_YOUNG_DEPS=1` also bypasses these errors;
+  `--allow` for an individual package does not. Discovery still selects
+  supported filenames, not arbitrary included files: for include-based
+  projects, audit the root requirements file explicitly on every change until
+  migrating to a supported self-contained input.
 * **`pom.xml` covers direct dependencies with an explicit version.** Transitive
   dependencies and versions inherited from a parent POM or a BOM have no version
   in the file to check. Gradle projects need dependency locking turned on

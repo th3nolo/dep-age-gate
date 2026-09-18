@@ -54,6 +54,70 @@ def keys(deps):
     return {dep.key for dep in deps}
 
 
+@pytest.mark.parametrize("layout", ["nested", "cycle", "missing", "relative", "url"])
+def test_requirements_includes_are_rejected_without_reading_them(tmp_path, monkeypatch, layout):
+    import builtins
+    import urllib.request
+
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    (nested / "deps.txt").write_text("-r ../leaf.txt\n", encoding="utf-8")
+    (tmp_path / "leaf.txt").write_text("requests==2.32.3\n", encoding="utf-8")
+    include = {
+        "nested": "sub/deps.txt", "cycle": "requirements.txt",
+        "missing": "absent.txt", "relative": "sub/../leaf.txt",
+        "url": "https://example.invalid/deps.txt",
+    }[layout]
+    path = tmp_path / "requirements.txt"
+    path.write_text(f"-r {include}\n", encoding="utf-8")
+    targets, errors = audit.build_targets(lock=str(path))
+    assert errors == []
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("requirements parsing must not open includes or fetch URLs")
+
+    monkeypatch.setattr(builtins, "open", unexpected_read)
+    monkeypatch.setattr(urllib.request, "urlopen", unexpected_read)
+    deps, skips, errors = audit.collect(targets)
+    assert deps == []
+    assert skips == []
+    assert len(errors) == 1
+    assert "unsupported requirements include" in errors[0]
+
+
+@needs_git
+@pytest.mark.parametrize("mode", ["staged", "base", "paths"])
+def test_requirements_diff_reports_unchanged_include_and_only_new_pins(repo, mode):
+    path = repo / "requirements.txt"
+    path.write_text("-r deps.txt\nrequests==2.32.3\n", encoding="utf-8")
+    git(repo, "add", "requirements.txt")
+    git(repo, "commit", "-qm", "requirements baseline")
+    path.write_text("-r deps.txt\nrequests==2.32.3\ncertifi==2024.8.30\n", encoding="utf-8")
+    options = {"cwd": str(repo)}
+    if mode == "staged":
+        git(repo, "add", "requirements.txt")
+        # Reading the working tree would incorrectly lose the include error.
+        path.write_text("requests==2.32.3\n", encoding="utf-8")
+    elif mode == "base":
+        options["base"] = "HEAD"
+    else:
+        options["paths"] = [str(path)]
+    targets, errors = audit.build_targets(**options)
+    assert errors == []
+    deps, _, errors = audit.collect(targets)
+    assert keys(deps) == {("pypi", "certifi", "2024.8.30")}
+    assert len(errors) == 1
+    assert "incomplete dependency coverage" in errors[0]
+
+
+def test_requirements_removed_include_does_not_fail_current_snapshot():
+    target = audit.Target("requirements.txt", "requests==2.32.3\n",
+                          "-r deps.txt\n")
+    deps, _, errors = audit.collect([target])
+    assert keys(deps) == {("pypi", "requests", "2.32.3")}
+    assert errors == []
+
+
 # ---------------------------------------------------------------- staged diff
 
 
