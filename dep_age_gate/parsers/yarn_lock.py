@@ -4,12 +4,21 @@ Berry entries are read from `resolution: "name@npm:version"`, which is the one
 place the real resolved protocol is recorded. Anything that is not `npm:`
 (workspace:, patch:, portal:, link:, file:, https:) has no registry publish
 date and is skipped.
+
+v1 keys can be npm aliases, `string-width-cjs@npm:string-width@^4.2.0`. The
+block's version then belongs to the real package (`string-width`), and that is
+the name that is checked. An alias key that cannot be read fails closed
+(UNKNOWN), it is never skipped.
 """
 
 import re
 
 from dep_age_gate.model import NPM, Dep, ParseOutcome, Skip
-from dep_age_gate.parsers._common import looks_like_registry_version, split_name_version
+from dep_age_gate.parsers._common import (
+    looks_like_registry_version,
+    parse_npm_alias,
+    split_name_version,
+)
 
 _BERRY_RESOLUTION = re.compile(r'^\s+resolution:\s*"(?P<value>[^"]+)"\s*$')
 _V1_VERSION = re.compile(r'^\s+version\s+"?(?P<value>[^"\s]+)"?\s*$')
@@ -69,7 +78,20 @@ def _parse_v1(text, source, outcome):
         if not descriptors or not version:
             return
         for descriptor in descriptors:
-            name, _range = split_name_version(descriptor)
+            alias = parse_npm_alias(descriptor)
+            if alias is not None and alias[1] is None:
+                # An alias key we cannot read. Keep the raw key as the name:
+                # it is not a valid npm name, so the lookup grades it UNKNOWN
+                # and the audit fails closed.
+                outcome.deps.append(
+                    Dep(NPM, descriptor, version, source, "malformed npm alias")
+                )
+                continue
+            if alias is not None:
+                # `<alias>@npm:<real>@<range>`: the block's version belongs to <real>.
+                name = alias[1]
+            else:
+                name, _range = split_name_version(descriptor)
             if not name:
                 outcome.skips.append(Skip(source, descriptor, "unparsable descriptor"))
                 continue
@@ -83,7 +105,9 @@ def _parse_v1(text, source, outcome):
                 continue
             seen.add((name, version))
             outcome.deps.append(Dep(NPM, name, version, source, descriptor))
-            break  # descriptors in one block all resolve to the same version
+            # No break: with npm aliases one block can name the same package
+            # under several keys, and every key must be read so a malformed
+            # one is never hidden behind a good one. `seen` drops repeats.
 
     for line in text.splitlines():
         if not line.strip() or line.lstrip().startswith("#"):

@@ -35,6 +35,62 @@ def split_name_version(text: str):
     return text[:at], text[at + 1:]
 
 
+# One npm package name, optionally scoped. Uppercase is accepted because old
+# registry packages (JSONStream, ...) still carry it.
+_NPM_NAME = re.compile(r"^(?:@[A-Za-z0-9._~-]+/)?[A-Za-z0-9._~-]+$")
+_NPM_ALIAS_MARK = "@npm:"
+
+
+def is_npm_name(name: str) -> bool:
+    """True when `name` can be an npm package name (`x` or `@scope/x`)."""
+    return bool(name) and bool(_NPM_NAME.match(name))
+
+
+def split_npm_target(text: str):
+    """Split the part after `npm:` into (real_name, range).
+
+    `string-width@^4.2.0` -> ("string-width", "^4.2.0")
+    `@scope/y@1.2.3`      -> ("@scope/y", "1.2.3")
+    `string-width`        -> ("string-width", "")
+    Returns (None, None) when the name is not a valid npm name or the text
+    ends in a bare `@`.
+    """
+    if not text:
+        return None, None
+    at = text.find("@", 1) if text.startswith("@") else text.find("@")
+    if at == -1:
+        real, wanted = text, ""
+    else:
+        real, wanted = text[:at], text[at + 1:]
+        if not wanted:
+            return None, None
+    if not is_npm_name(real):
+        return None, None
+    return real, wanted
+
+
+def parse_npm_alias(descriptor: str):
+    """Read an npm alias descriptor `<alias>@npm:<real>[@<range>]`.
+
+    yarn v1 writes these as lockfile keys (`string-width-cjs@npm:string-width@^4.2.0`,
+    `@scope/x@npm:@scope/y@1.2.3`). The installed package is <real>, so its
+    publish date is the one to check.
+
+    Returns None when `descriptor` is not an alias at all,
+    (alias, real, range) when it is a well-formed alias (range may be ""),
+    (alias, None, None) when it is an alias that cannot be read. The caller
+    must fail closed on the last form, never skip it.
+    """
+    at = descriptor.find(_NPM_ALIAS_MARK, 1)
+    if at <= 0:
+        return None
+    alias = descriptor[:at]
+    real, wanted = split_npm_target(descriptor[at + len(_NPM_ALIAS_MARK):])
+    if not is_npm_name(alias) or real is None:
+        return alias, None, None
+    return alias, real, wanted
+
+
 def strip_jsonc(text: str) -> str:
     """Remove // and /* */ comments and trailing commas.
 

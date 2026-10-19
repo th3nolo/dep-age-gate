@@ -29,6 +29,17 @@ TIMEOUT = 20
 RETRIES = 3
 
 
+def _not_an_npm_name(name: str) -> bool:
+    """True for a name no npm registry can hold: `:`, whitespace, or `@`
+    anywhere but the scope position. Checked before any network call."""
+    return (
+        not name
+        or ":" in name
+        or "@" in name[1:]
+        or any(char.isspace() for char in name)
+    )
+
+
 class NotFound(Exception):
     pass
 
@@ -231,6 +242,10 @@ class RegistryClient:
     def published_at(self, dep: Dep):
         """Return a timezone-aware UTC datetime. Raise NotFound / TransportError."""
         if dep.ecosystem == NPM:
+            if _not_an_npm_name(dep.name):
+                # e.g. an unreadable alias key `x@npm:bad name@1` kept by a
+                # parser so it fails closed. No registry can know it.
+                raise NotFound(f"npm:{dep.name}@{dep.version}: not a valid npm package name")
             times = self._npm_times(dep.name)
             raw = times.get(dep.version)
             if raw is None:

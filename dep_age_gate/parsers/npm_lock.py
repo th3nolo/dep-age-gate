@@ -4,7 +4,7 @@ import json
 import re
 
 from dep_age_gate.model import NPM, Dep, ParseOutcome, Skip
-from dep_age_gate.parsers._common import looks_like_registry_version
+from dep_age_gate.parsers._common import looks_like_registry_version, split_npm_target
 
 # The package name is what follows the LAST node_modules/ segment. A nested
 # install such as node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/tslib
@@ -86,7 +86,17 @@ def _walk_v1(deps, source, outcome, prefix=""):
         if not isinstance(node, dict):
             continue
         version = node.get("version")
-        if version and looks_like_registry_version(version):
+        if isinstance(version, str) and version.startswith("npm:"):
+            # v1 alias: "string-width-cjs": {"version": "npm:string-width@4.2.3"}.
+            # Check the real package; an unreadable alias fails closed (UNKNOWN).
+            real, real_version = split_npm_target(version[4:])
+            if real and real_version and looks_like_registry_version(real_version):
+                outcome.deps.append(Dep(NPM, real, real_version, source, prefix + name))
+            else:
+                outcome.deps.append(
+                    Dep(NPM, f"{name}@{version}", version, source, "malformed npm alias")
+                )
+        elif version and looks_like_registry_version(version):
             outcome.deps.append(Dep(NPM, name, version, source, prefix + name))
         elif version:
             outcome.skips.append(Skip(source, f"{name}@{version}", "not a registry version"))

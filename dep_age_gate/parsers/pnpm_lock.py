@@ -11,7 +11,11 @@ historic shapes:
 import re
 
 from dep_age_gate.model import NPM, Dep, ParseOutcome, Skip
-from dep_age_gate.parsers._common import looks_like_registry_version, split_name_version
+from dep_age_gate.parsers._common import (
+    looks_like_registry_version,
+    parse_npm_alias,
+    split_name_version,
+)
 
 _V5 = re.compile(r"^/(?P<name>@?[^@]+?)/(?P<version>\d[^/]*)$")
 
@@ -70,11 +74,21 @@ def parse(text, source, **_):
             raw = raw.split("_", 1)[0]
 
         name = version = None
-        match = _V5.match(raw)
-        if match:
+        candidate = raw[1:] if raw.startswith("/") else raw
+        alias = parse_npm_alias(candidate)
+        match = _V5.match(raw) if alias is None else None
+        if alias is not None:
+            # `x@npm:real@1.2.3`: check the real package. pnpm normally keys
+            # `packages:` by the real name; this covers the alias form too.
+            name, version = alias[1], alias[2]
+            if not name or not version or not looks_like_registry_version(version):
+                outcome.deps.append(
+                    Dep(NPM, candidate, version or candidate, source, "malformed npm alias")
+                )
+                continue
+        elif match:
             name, version = match.group("name"), match.group("version")
         else:
-            candidate = raw[1:] if raw.startswith("/") else raw
             name, version = split_name_version(candidate)
 
         if not name or not version:
