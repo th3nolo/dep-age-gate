@@ -115,6 +115,8 @@ def test_unconfigured_registry_is_never_contacted(monkeypatch):
     '[{"url":"https://packages.example.com/simple","token":"secret"}]',
     '[{"url":"https://packages.example.com/simple","username_env":"USER"}]',
     '[{"url":"https://packages.example.com/simple","username_env":5,"password_env":"PASS"}]',
+    '[{"url":"https://packages.example.com/simple","html_upload_time":"yes"}]',
+    '[{"url":"https://packages.example.com/simple","html_upload_time":1}]',
     json.dumps([{"url": INDEX}, {"url": INDEX + "/"}]),
 ])
 def test_malformed_configuration_fails_closed_without_echoing_it(monkeypatch, raw):
@@ -362,3 +364,105 @@ def test_dns_error_is_sanitized(monkeypatch):
     with pytest.raises(PythonIndexError, match="request or JSON decoding failed") as error:
         SimpleIndexTransport().get_json(INDEX + "/requests/", {})
     assert "secret" not in str(error.value)
+
+
+# Opt-in HTML timestamps (download.pytorch.org style): PEP 503 links with data-upload-time.
+
+TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
+R2 = "https://download-r2.pytorch.org/whl/cu128/"
+
+
+def html_page(*links):
+    anchors = "".join(f'<a href="{href}"{attrs}>{href}</a>\n' for href, attrs in links)
+    return f"<!DOCTYPE html>\n<html><body><h1>Links for torch</h1>\n{anchors}</body></html>\n"
+
+
+def torch_link(platform, stamp, version="2.8.0%2Bcu128"):
+    attrs = "" if stamp is None else f' data-upload-time="{stamp}"'
+    return f"{R2}torch-{version}-cp311-cp311-{platform}.whl#sha256={'0' * 64}", attrs
+
+
+class HtmlTransport:
+    def __init__(self, page, content_type=python_index.HTML_TYPE):
+        self.page = page
+        self.content_type = content_type
+        self.calls = []
+
+    def get_simple(self, url, headers):
+        self.calls.append((url, headers))
+        return self.content_type, self.page
+
+    def get_json(self, url, headers):
+        raise AssertionError("an opted-in index must use get_simple")
+
+
+@pytest.fixture
+def torch_index(monkeypatch):
+    monkeypatch.setenv(CONFIG_ENV, json.dumps([{"url": INDEX}, {"url": TORCH_INDEX, "html_upload_time": True}]))
+
+
+def test_opted_in_html_index_uses_newest_data_upload_time(torch_index):
+    page = html_page(torch_link("win_amd64", "2025-10-01T23:49:30Z"),
+                     torch_link("manylinux_2_28_x86_64", "2025-10-01T23:57:41Z"),
+                     torch_link("win_amd64", NEW, version="2.9.0%2Bcu128"))
+    transport = HtmlTransport(page)
+    published = simple_published_at(TORCH_INDEX, "torch", "2.8.0+cu128", transport)
+    assert published == datetime(2025, 10, 1, 23, 57, 41, tzinfo=timezone.utc)
+    url, headers = transport.calls[0]
+    assert url == TORCH_INDEX + "/torch/"
+    assert headers["Accept"] == "application/vnd.pypi.simple.v1+json, text/html;q=0.01"
+
+
+def test_opted_in_html_index_passes_and_fails_the_age_check(torch_index):
+    dep = Dep(PYPI, "torch", "2.8.0+cu128", registry=TORCH_INDEX)
+    old = HtmlTransport(html_page(torch_link("win_amd64", OLD)))
+    assert client(old).evaluate([dep], 259200, now=NOW)[0].status == "PASS"
+    new = HtmlTransport(html_page(torch_link("win_amd64", OLD), torch_link("manylinux_2_28_x86_64", NEW)))
+    assert client(new).evaluate([dep], 259200, now=NOW)[0].status == "FAIL"
+
+
+@pytest.mark.parametrize("stamp", [None, "", "yesterday", "2025-10-01", "2025-10-01T23:49:30",
+    "2025-10-01T23:49:30+00:00", "2025-02-31T00:00:00Z"])
+def test_opted_in_html_missing_or_invalid_upload_time_is_unknown(torch_index, stamp):
+    page = html_page(torch_link("win_amd64", OLD), torch_link("manylinux_2_28_x86_64", stamp))
+    with pytest.raises(PythonIndexError, match="invalid data-upload-time"):
+        simple_published_at(TORCH_INDEX, "torch", "2.8.0+cu128", HtmlTransport(page))
+    result = client(HtmlTransport(page)).evaluate(
+        [Dep(PYPI, "torch", "2.8.0+cu128", registry=TORCH_INDEX)], 259200, now=NOW)[0]
+    assert result.status == "UNKNOWN"
+
+
+@pytest.mark.parametrize("version", ["2.8.0", "2.8.0%2Bcu126", "2.8.01%2Bcu128"])
+def test_opted_in_html_other_versions_cannot_supply_timestamps(torch_index, version):
+    page = html_page(torch_link("win_amd64", OLD, version=version))
+    with pytest.raises(PythonIndexError, match="no verifiable files"):
+        simple_published_at(TORCH_INDEX, "torch", "2.8.0+cu128", HtmlTransport(page))
+
+
+def test_opted_in_index_serving_json_keeps_pep_700_rules(torch_index):
+    json_type = python_index.JSON_TYPE
+    assert simple_published_at(TORCH_INDEX, "requests", "2.32.3", HtmlTransport(payload(), json_type)) == \
+        datetime(2020, 1, 1, tzinfo=timezone.utc)
+    with pytest.raises(PythonIndexError, match="PEP 700 upload-time"):
+        simple_published_at(TORCH_INDEX, "requests", "2.32.3", HtmlTransport(payload(None), json_type))
+
+
+def test_without_opt_in_html_is_never_requested(torch_index):
+    metadata = MetadataTransport()
+    simple_published_at(INDEX, "requests", "2.32.3", metadata)
+    assert metadata.calls[0][1]["Accept"] == "application/vnd.pypi.simple.v1+json"
+
+
+def test_real_http_html_is_returned_only_by_get_simple(local_registry):
+    page = html_page(torch_link("win_amd64", OLD))
+    local_registry.content_type = "text/html; charset=utf-8"
+    local_registry.body = page.encode()
+    assert SimpleIndexTransport().get_simple(INDEX + "/torch/", {}) == ("text/html", page)
+    with pytest.raises(PythonIndexError, match="does not serve Simple JSON metadata"):
+        SimpleIndexTransport().get_json(INDEX + "/torch/", {})
+
+
+def test_real_http_get_simple_rejects_other_content_types(local_registry):
+    local_registry.content_type = "text/plain"
+    with pytest.raises(PythonIndexError, match="does not serve Simple JSON or HTML"):
+        SimpleIndexTransport().get_simple(INDEX + "/torch/", {})
