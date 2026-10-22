@@ -3,6 +3,10 @@
 Lockfiles are untrusted input. Only runner-owned environment configuration can
 authorize an endpoint or select credential environment variables. No redirects,
 ambient proxy credentials, artifact downloads, or public-PyPI fallback are used.
+
+An index entry may opt in with "html_upload_time": true to accept a PEP 503
+HTML page whose file links carry a data-upload-time attribute (as served by
+download.pytorch.org). Without that opt-in, HTML stays unsupported.
 """
 
 import base64
@@ -16,10 +20,13 @@ import ssl
 import threading
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from html.parser import HTMLParser
+from urllib.parse import unquote, urlsplit
 
 CONFIG_ENV = "DEP_AGE_GATE_PYTHON_INDEXES"
 PUBLIC_INDEX = "https://pypi.org/simple"
+JSON_TYPE = "application/vnd.pypi.simple.v1+json"
+HTML_TYPE = "text/html"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 REQUEST_TIMEOUT = 20
 MAX_ADDRESSES = 8
@@ -83,8 +90,9 @@ def _configuration(registry: str) -> dict[str, str]:
         matched = None
         seen = set()
         for entry in entries:
-            if (not isinstance(entry, dict) or set(entry) - {"url", "username_env", "password_env"}
-                    or not isinstance(entry.get("url"), str)):
+            if (not isinstance(entry, dict) or set(entry) - {"url", "username_env", "password_env", "html_upload_time"}
+                    or not isinstance(entry.get("url"), str)
+                    or not isinstance(entry.get("html_upload_time", False), bool)):
                 raise ValueError
             identity = canonical_python_index(entry["url"])
             if not identity or identity in seen:
@@ -114,7 +122,8 @@ def configured_python_index(url: str) -> str:
 
 def _headers(registry: str) -> dict[str, str]:
     config = _configuration(registry)
-    headers = {"Accept": "application/vnd.pypi.simple.v1+json"}
+    accept = JSON_TYPE + (", " + HTML_TYPE + ";q=0.01" if config.get("html_upload_time") else "")
+    headers = {"Accept": accept}
     if "username_env" in config:
         username = os.environ.get(config["username_env"])
         password = os.environ.get(config["password_env"])
@@ -134,6 +143,20 @@ class SimpleIndexTransport:
     """
 
     def get_json(self, url: str, headers: dict[str, str]) -> object:
+        _, body = self._fetch(url, headers, (JSON_TYPE,))
+        return _decode_json(body)
+
+    def get_simple(self, url: str, headers: dict[str, str]) -> tuple[str, object]:
+        """Simple JSON, or HTML for an opted-in index: (content type, JSON data or HTML text)."""
+        content_type, body = self._fetch(url, headers, (JSON_TYPE, HTML_TYPE))
+        if content_type == JSON_TYPE:
+            return content_type, _decode_json(body)
+        try:
+            return content_type, body.decode("utf-8")
+        except UnicodeDecodeError:
+            raise PythonIndexError("Python index HTML is not valid UTF-8") from None
+
+    def _fetch(self, url: str, headers: dict[str, str], allowed: tuple[str, ...]) -> tuple[str, bytes]:
         parts = urlsplit(url)
         connection = None
         response = None
@@ -168,8 +191,10 @@ class SimpleIndexTransport:
             response.begin()
             if response.status != 200:
                 raise PythonIndexError(f"Python index HTTP {response.status}; redirects are not followed")
-            if response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "application/vnd.pypi.simple.v1+json":
-                raise PythonIndexError("Python index does not serve Simple JSON metadata")
+            content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type not in allowed:
+                raise PythonIndexError("Python index does not serve Simple JSON metadata" if allowed == (JSON_TYPE,)
+                                       else "Python index does not serve Simple JSON or HTML metadata")
             length = response.getheader("Content-Length")
             if length is not None and (not length.isdigit() or int(length) > MAX_RESPONSE_BYTES):
                 raise PythonIndexError("Python index metadata exceeds response limit")
@@ -189,7 +214,7 @@ class SimpleIndexTransport:
                 chunks.append(chunk)
             if length is not None and size != int(length):
                 raise PythonIndexError("Python index metadata response was truncated")
-            return json.loads(b"".join(chunks))
+            return content_type, b"".join(chunks)
         except PythonIndexError:
             raise
         except (OSError, ValueError, RecursionError, http.client.HTTPException):
@@ -203,6 +228,40 @@ class SimpleIndexTransport:
                 connection.close()
             if raw_socket is not None:
                 raw_socket.close()
+
+
+def _decode_json(body: bytes) -> object:
+    try:
+        return json.loads(body)
+    except (ValueError, RecursionError):
+        raise PythonIndexError("Python index request or JSON decoding failed") from None
+
+
+class _AnchorParser(HTMLParser):
+    """Collect (filename, data-upload-time) from PEP 503 file links; nothing is fetched."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.files = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "a":
+            return
+        values = dict(attrs)
+        href = values.get("href")
+        if isinstance(href, str):
+            filename = unquote(urlsplit(href).path.rsplit("/", 1)[-1])
+            self.files.append({"filename": filename, "upload-time": values.get("data-upload-time")})
+
+
+def _html_files(text: str) -> list[dict]:
+    parser = _AnchorParser()
+    try:
+        parser.feed(text)
+        parser.close()
+    except (ValueError, AssertionError, RecursionError):
+        raise PythonIndexError("Python index HTML could not be parsed") from None
+    return parser.files
 
 
 def _normalize(name: str) -> str:
@@ -232,7 +291,14 @@ def simple_published_at(registry: str, name: str, version: str, transport: Simpl
     if not registry or not _NAME.fullmatch(name) or not re.fullmatch(r"[A-Za-z0-9.!+_-]+", version):
         raise PythonIndexError("unsupported Python index package identity")
     normalized = _normalize(name)
-    data = transport.get_json(f"{registry}/{normalized}/", headers=_headers(registry))
+    url = f"{registry}/{normalized}/"
+    if _configuration(registry).get("html_upload_time"):
+        content_type, data = transport.get_simple(url, headers=_headers(registry))
+        if content_type == HTML_TYPE:
+            # PEP 503 HTML has no project-name field; the exact project URL is the identity.
+            return _newest_upload(_html_files(data), normalized, version, "data-upload-time")
+    else:
+        data = transport.get_json(url, headers=_headers(registry))
     if (not isinstance(data, dict) or not isinstance(data.get("meta"), dict)
             or not isinstance(data.get("name"), str) or _normalize(data["name"]) != normalized
             or not isinstance(data.get("files"), list)):
@@ -240,19 +306,23 @@ def simple_published_at(registry: str, name: str, version: str, transport: Simpl
     api_version = data["meta"].get("api-version")
     if not isinstance(api_version, str) or not re.fullmatch(r"1\.[0-9]{1,6}", api_version) or int(api_version.split(".")[1]) < 1:
         raise PythonIndexError("Python index requires Simple JSON API 1.1 or newer in major version 1")
+    return _newest_upload(data["files"], normalized, version, "PEP 700 upload-time")
+
+
+def _newest_upload(files: list, normalized: str, version: str, label: str) -> datetime:
     stamps = []
-    for item in data["files"]:
+    for item in files:
         if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
             raise PythonIndexError("Python index metadata contains an invalid file entry")
         if not _file_matches(item["filename"], normalized, version):
             continue
         stamp = item.get("upload-time")
         if not isinstance(stamp, str) or not _STAMP.fullmatch(stamp):
-            raise PythonIndexError("Python index version has missing or invalid PEP 700 upload-time")
+            raise PythonIndexError(f"Python index version has missing or invalid {label}")
         try:
             stamps.append(datetime.fromisoformat(stamp[:-1] + "+00:00").astimezone(timezone.utc))
         except ValueError:
-            raise PythonIndexError("Python index version has invalid PEP 700 upload-time") from None
+            raise PythonIndexError(f"Python index version has invalid {label}") from None
     if not stamps:
         raise PythonIndexError("Python index has no verifiable files for this exact name and version")
     return max(stamps)

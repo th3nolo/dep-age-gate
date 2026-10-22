@@ -193,16 +193,33 @@ configure Renovate's own requests; this tool does not read Renovate config,
 `.netrc`, keyrings, or package-manager config automatically.
 [Renovate's PyPI datasource](https://docs.renovatebot.com/modules/datasource/pypi/)
 can discover versions through HTML as well as JSON. An age check additionally
-needs publication timestamps: this adapter accepts only timestamp-bearing Simple
-JSON, including configured `/+simple` paths. Artifactory operators must enable
-`upload-time` metadata generation on the server.
+needs publication timestamps: by default this adapter accepts only
+timestamp-bearing Simple JSON, including configured `/+simple` paths. Artifactory
+operators must enable `upload-time` metadata generation on the server.
+
+Some indexes serve only PEP 503 HTML but put the upload time on each file link
+as a `data-upload-time` attribute. `download.pytorch.org` does this, and it is
+the only source of CUDA builds of `torch` on Windows. Opt in per index with
+`"html_upload_time": true`:
+
+```sh
+export DEP_AGE_GATE_PYTHON_INDEXES='[{"url":"https://download.pytorch.org/whl/cu128","html_upload_time":true}]'
+```
+
+For an opted-in index the request accepts Simple JSON first and HTML second.
+A JSON answer follows the normal PEP 700 rules. An HTML answer must give a valid
+UTC `data-upload-time` for every file link of the exact name and version; the
+newest one is used. A missing or invalid attribute is `UNKNOWN` and fails the
+check. Link targets are never requested, and `Last-Modified` is still never used.
+Indexes without the opt-in keep the JSON-only behaviour.
 
 The adapter in `dep_age_gate/python_index.py` requires standard wheel or sdist
 filenames matching the exact package/version and valid UTC upload times for
 every matching file. It uses the **newest matching file upload**, so adding a new
 wheel to an old version cannot borrow the old source archive's age. Version
 spellings requiring equivalence rules, unusual distribution formats, HTML-only
-indexes, and indexes without timestamps remain `UNKNOWN` and fail the check.
+indexes (unless opted in as above), and indexes without timestamps remain `UNKNOWN`
+and fail the check.
 There is no `Last-Modified` fallback. Unconfigured indexes remain parse errors,
 including unchanged entries; unsupported historical entries cannot hide a
 later switch to a supported source. An unchanged configured source/version is
